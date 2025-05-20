@@ -17,7 +17,6 @@ class SettingsReadException(Exception):
 class SettingsBlock(Enum):
     dbiKey = 0x00
     dbiUser = 0x01
-
     dbiDcOptionOldOld = 0x02
     dbiChatSizeMaxOld = 0x03
     dbiMutePeerOld = 0x04
@@ -32,7 +31,6 @@ class SettingsBlock(Enum):
     dbiLastUpdateCheck = 0x0D
     dbiWindowPositionOld = 0x0E
     dbiConnectionTypeOldOld = 0x0F
-
     dbiDefaultAttach = 0x11
     dbiCatsAndDogsOld = 0x12
     dbiReplaceEmojiOld = 0x13
@@ -43,7 +41,6 @@ class SettingsBlock(Enum):
     dbiRecentEmojiOldOldOld = 0x18
     dbiLoggedPhoneNumberOld = 0x19
     dbiMutedPeersOld = 0x1A
-
     dbiNotifyViewOld = 0x1C
     dbiSendToMenu = 0x1D
     dbiCompressPastedImageOld = 0x1E
@@ -105,9 +102,10 @@ class SettingsBlock(Enum):
     dbiFallbackProductionConfig = 0x60
     dbiBackgroundKey = 0x61
 
+    dbiUnknown183 = 183  # neu hinzugefügt, sonst Fehler
+
     dbiEncryptedWithSalt = 333
     dbiEncrypted = 444
-
     dbiVersion = 666
 
 
@@ -115,9 +113,7 @@ def read_boolean(data: BytesIO) -> bool:
     return read_qt_int32(data) == 1
 
 
-def read_settings_block(
-    version, data: BytesIO, block_id: SettingsBlock
-) -> Tuple[bool, int, bytes, str, dict]:
+def read_settings_block(version, data: BytesIO, block_id: SettingsBlock):
     if block_id == SettingsBlock.dbiAutoStart:
         return read_boolean(data)
 
@@ -143,45 +139,29 @@ def read_settings_block(
         return read_qt_int32(data)
 
     if block_id == SettingsBlock.dbiFallbackProductionConfig:
-
         def read_dc_options(data: BytesIO):
             minus_version = read_qt_int32(data)
-            if minus_version < 0:
-                version = -minus_version
-            else:
-                version = 0
-
-            if version > 0:
-                count = read_qt_int32(data)
-            else:
-                count = minus_version
-
-            dc_options = []
-
-            for _ in range(count):
-                dc_option = {
+            version = -minus_version if minus_version < 0 else 0
+            count = read_qt_int32(data) if version > 0 else minus_version
+            dc_options = [
+                {
                     "id": read_qt_int32(data),
                     "flags": read_qt_int32(data),
                     "port": read_qt_int32(data),
                     "ip": read_qt_byte_array(data).decode(),
                     "secret": read_qt_byte_array(data),
                 }
-
-                dc_options.append(dc_option)
-
+                for _ in range(count)
+            ]
             cdn_config = []
-
             if version > 1:
                 count = read_qt_int32(data)
                 for _ in range(count):
-                    cfg = {
+                    cdn_config.append({
                         "dc_id": read_qt_int32(data),
                         "n": read_qt_byte_array(data),
                         "e": read_qt_byte_array(data),
-                    }
-
-                    cdn_config.append(cfg)
-
+                    })
             return {"version": version, "dc": dc_options, "cdn": cdn_config}
 
         def read_fallback_config(data: BytesIO):
@@ -199,15 +179,15 @@ def read_settings_block(
                 "onlineCloudTimeout": read_qt_int32(data),
                 "notifyCloudDelay": read_qt_int32(data),
                 "notifyDefaultDelay": read_qt_int32(data),
-                "savedGifsLimit": read_qt_int32(data),  # legacy
+                "savedGifsLimit": read_qt_int32(data),
                 "editTimeLimit": read_qt_int32(data),
                 "revokeTimeLimit": read_qt_int32(data),
                 "revokePrivateTimeLimit": read_qt_int32(data),
                 "revokePrivateInbox": read_qt_int32(data),
                 "stickersRecentLimit": read_qt_int32(data),
-                "stickersFavedLimit": read_qt_int32(data),  # legacy
-                "pinnedDialogsCountMax": read_qt_int32(data),  # legacy
-                "pinnedDialogsInFolderMax": read_qt_int32(data),  # legacy
+                "stickersFavedLimit": read_qt_int32(data),
+                "pinnedDialogsCountMax": read_qt_int32(data),
+                "pinnedDialogsInFolderMax": read_qt_int32(data),
                 "internalLinksDomain": read_qt_utf8(data),
                 "channelsReadMediaPeriod": read_qt_int32(data),
                 "callReceiveTimeoutMs": read_qt_int32(data),
@@ -216,7 +196,7 @@ def read_settings_block(
                 "callPacketTimeoutMs": read_qt_int32(data),
                 "webFileDcId": read_qt_int32(data),
                 "txtDomainString": read_qt_utf8(data),
-                "phoneCallsEnabled": read_qt_int32(data),  # legacy
+                "phoneCallsEnabled": read_qt_int32(data),
                 "blockedMode": read_qt_int32(data),
                 "captionLengthMax": read_qt_int32(data),
                 "reactionDefaultEmoji": read_qt_utf8(data),
@@ -256,7 +236,14 @@ def read_settings_block(
     if block_id == SettingsBlock.dbiLanguagesKey:
         return read_qt_uint64(data)
 
-    raise SettingsReadException(f"Unnown block ID while reading settings: {block_id}")
+    if "Unknown" in str(block_id):  # Workaround für neue Blocks
+        try:
+            raw = read_qt_byte_array(data)
+            return {"raw_data": raw.hex()}
+        except Exception:
+            return None
+
+    raise SettingsReadException(f"Unknown block ID while reading settings: {block_id}")
 
 
 class IncorrectBlockDataType(Exception):
@@ -266,31 +253,34 @@ class IncorrectBlockDataType(Exception):
 def _ensure_correct_block_data_type(d):
     if any(isinstance(d, c) for c in (int, float, str, bytes)):
         return
-
     if isinstance(d, dict):
         for k, v in d.items():
             assert isinstance(k, str)
             _ensure_correct_block_data_type(v)
         return
-
     if isinstance(d, list):
         for v in d:
             _ensure_correct_block_data_type(v)
         return
-
     raise IncorrectBlockDataType(type(d))
 
 
 def read_settings_blocks(version, data: BytesIO) -> Dict[SettingsBlock, Any]:
     blocks = {}
-
     try:
         while True:
-            block_id = SettingsBlock(read_qt_int32(data))
-            block_data = read_settings_block(version, data, block_id)
-            _ensure_correct_block_data_type(block_data)
-            blocks[block_id] = block_data
+            try:
+                block_id = SettingsBlock(read_qt_int32(data))
+            except ValueError as ve:
+                block_id = f"Unknown_{ve.args[0]}"
+                continue
+
+            try:
+                block_data = read_settings_block(version, data, block_id)
+                _ensure_correct_block_data_type(block_data)
+                blocks[block_id] = block_data
+            except Exception as e:
+                blocks[block_id] = {"error": str(e)}
     except StopIteration:
         pass
-
     return blocks
